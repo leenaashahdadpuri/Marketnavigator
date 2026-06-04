@@ -72,6 +72,45 @@ def detect_racks(pil_image):
 
     return image, detected_racks
 
+st.subheader(
+    "Rack Detection"
+)
+
+if st.button(
+    f"Detect Racks on Page {page_number + 1}"
+):
+
+    processed_image, racks = detect_racks(
+        img
+    )
+
+    st.image(
+        processed_image,
+        caption="Detected Racks",
+        use_container_width=True
+    )
+
+    if racks:
+
+        rack_df = pd.DataFrame(
+            racks
+        )
+
+        st.success(
+            f"{len(racks)} racks detected"
+        )
+
+        st.dataframe(
+            rack_df,
+            use_container_width=True
+        )
+
+    else:
+
+        st.warning(
+            "No racks detected"
+        )
+
 # --------------------------------------------------
 # Page Configuration
 # --------------------------------------------------
