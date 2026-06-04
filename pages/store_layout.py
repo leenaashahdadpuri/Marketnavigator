@@ -3,6 +3,75 @@ import fitz  # PyMuPDF
 from PIL import Image
 import pandas as pd
 
+import cv2
+import numpy as np
+
+def detect_racks(pil_image):
+
+    image = np.array(pil_image)
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_RGB2GRAY
+    )
+
+    blur = cv2.GaussianBlur(
+        gray,
+        (5, 5),
+        0
+    )
+
+    _, thresh = cv2.threshold(
+        blur,
+        180,
+        255,
+        cv2.THRESH_BINARY_INV
+    )
+
+    contours, _ = cv2.findContours(
+        thresh,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    detected_racks = []
+
+    rack_number = 1
+
+    for contour in contours:
+
+        x, y, w, h = cv2.boundingRect(
+            contour
+        )
+
+        area = w * h
+
+        if area < 5000:
+            continue
+
+        detected_racks.append({
+            "rack_code":
+                f"RACK-{rack_number:03}",
+
+            "x": x,
+            "y": y,
+
+            "width": w,
+            "height": h
+        })
+
+        cv2.rectangle(
+            image,
+            (x, y),
+            (x+w, y+h),
+            (0, 255, 0),
+            3
+        )
+
+        rack_number += 1
+
+    return image, detected_racks
+
 # --------------------------------------------------
 # Page Configuration
 # --------------------------------------------------
