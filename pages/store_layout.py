@@ -111,6 +111,25 @@ if st.button(
             "No racks detected"
         )
 
+import plotly.express as px
+
+fig = px.scatter(
+    rack_df,
+    x="x",
+    y="y",
+    text="rack_code",
+    title="Detected Rack Layout"
+)
+
+fig.update_traces(
+    textposition="top center"
+)
+
+st.plotly_chart(
+    fig,
+    use_container_width=True
+)
+
 # --------------------------------------------------
 # Page Configuration
 # --------------------------------------------------
