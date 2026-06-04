@@ -1,7 +1,9 @@
 streamlit
 pymupdf
-pillow
-pandas
-plotly
 opencv-python-headless
 numpy
+pandas
+plotly
+pillow
+sqlalchemy
+psycopg2-binary
