@@ -1,14 +1,66 @@
 import streamlit as st
-import fitz  # PyMuPDF
-from PIL import Image
-import pandas as pd
-
+import fitz
 import cv2
 import numpy as np
+import pandas as pd
+import plotly.express as px
+
+from PIL import Image
+from io import BytesIO
+
+# ---------------------------------------------------
+# PAGE CONFIG
+# ---------------------------------------------------
+
+st.set_page_config(
+    page_title="Store Layout Generator",
+    layout="wide"
+)
+
+st.title("🏬 Store Layout Generator")
+
+st.markdown("""
+Upload a store layout PDF.
+
+Current Features:
+- PDF Upload
+- PDF Preview
+- Metadata Extraction
+- Rack Detection
+- Coordinate Generation
+- Layout Visualization
+
+Future Features:
+- PostgreSQL Storage
+- Navigation Graph Generation
+- Route Optimization
+- AR Anchor Generation
+""")
+
+# ---------------------------------------------------
+# HELPER FUNCTIONS
+# ---------------------------------------------------
+
+def pdf_page_to_image(page):
+
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(2, 2)
+    )
+
+    image = Image.frombytes(
+        "RGB",
+        [pix.width, pix.height],
+        pix.samples
+    )
+
+    return image
+
 
 def detect_racks(pil_image):
 
     image = np.array(pil_image)
+
+    original = image.copy()
 
     gray = cv2.cvtColor(
         image,
@@ -34,7 +86,7 @@ def detect_racks(pil_image):
         cv2.CHAIN_APPROX_SIMPLE
     )
 
-    detected_racks = []
+    racks = []
 
     rack_number = 1
 
@@ -46,126 +98,68 @@ def detect_racks(pil_image):
 
         area = w * h
 
-        if area < 5000:
+        # Ignore tiny objects
+        if area < 3000:
             continue
 
-        detected_racks.append({
-            "rack_code":
-                f"RACK-{rack_number:03}",
+        aspect_ratio = w / h
 
-            "x": x,
-            "y": y,
+        # Filter obvious noise
+        if w < 30 or h < 30:
+            continue
 
-            "width": w,
-            "height": h
-        })
+        rack_code = f"RACK-{rack_number:03}"
+
+        racks.append(
+            {
+                "rack_code": rack_code,
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h,
+                "area": area,
+                "aspect_ratio": round(
+                    aspect_ratio,
+                    2
+                )
+            }
+        )
 
         cv2.rectangle(
-            image,
+            original,
             (x, y),
-            (x+w, y+h),
+            (x + w, y + h),
             (0, 255, 0),
             3
         )
 
+        cv2.putText(
+            original,
+            rack_code,
+            (x, y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 0),
+            2
+        )
+
         rack_number += 1
 
-    return image, detected_racks
+    return original, racks
 
-st.subheader(
-    "Rack Detection"
-)
 
-if st.button(
-    f"Detect Racks on Page {page_number + 1}"
-):
-
-    processed_image, racks = detect_racks(
-        img
-    )
-
-    st.image(
-        processed_image,
-        caption="Detected Racks",
-        use_container_width=True
-    )
-
-    if racks:
-
-        rack_df = pd.DataFrame(
-            racks
-        )
-
-        st.success(
-            f"{len(racks)} racks detected"
-        )
-
-        st.dataframe(
-            rack_df,
-            use_container_width=True
-        )
-
-    else:
-
-        st.warning(
-            "No racks detected"
-        )
-
-import plotly.express as px
-
-fig = px.scatter(
-    rack_df,
-    x="x",
-    y="y",
-    text="rack_code",
-    title="Detected Rack Layout"
-)
-
-fig.update_traces(
-    textposition="top center"
-)
-
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
-
-# --------------------------------------------------
-# Page Configuration
-# --------------------------------------------------
-
-st.set_page_config(
-    page_title="Store Layout Upload",
-    layout="wide"
-)
-
-st.title("🏬 Store Layout Generator")
-
-st.markdown("""
-Upload a store layout PDF.
-
-This module will:
-
-- Upload and validate PDF
-- Extract PDF metadata
-- Display PDF pages
-- Convert pages into images
-- Prepare layout images for rack detection
-- Serve as the foundation for future AR mapping
-""")
-
-# --------------------------------------------------
-# PDF Upload
-# --------------------------------------------------
+# ---------------------------------------------------
+# PDF UPLOAD
+# ---------------------------------------------------
 
 uploaded_file = st.file_uploader(
     "Upload Store Layout PDF",
     type=["pdf"]
 )
 
-# --------------------------------------------------
-# Process PDF
-# --------------------------------------------------
+# ---------------------------------------------------
+# PROCESS PDF
+# ---------------------------------------------------
 
 if uploaded_file:
 
@@ -178,11 +172,13 @@ if uploaded_file:
             filetype="pdf"
         )
 
-        st.success("PDF uploaded successfully")
+        st.success(
+            "PDF uploaded successfully"
+        )
 
-        # --------------------------------------------------
-        # Metadata Section
-        # --------------------------------------------------
+        # -----------------------------------------
+        # PDF INFO
+        # -----------------------------------------
 
         st.subheader("📄 PDF Information")
 
@@ -208,40 +204,24 @@ if uploaded_file:
                 metadata.get("author") or "N/A"
             )
 
-        # --------------------------------------------------
-        # Metadata Table
-        # --------------------------------------------------
+        # -----------------------------------------
+        # PAGE PROCESSING
+        # -----------------------------------------
 
-        with st.expander("View Full Metadata"):
+        st.subheader("🖼 Layout Pages")
 
-            metadata_df = pd.DataFrame(
-                metadata.items(),
-                columns=["Property", "Value"]
-            )
+        all_racks = []
 
-            st.dataframe(
-                metadata_df,
-                use_container_width=True
-            )
+        for page_number in range(
+            pdf.page_count
+        ):
 
-        # --------------------------------------------------
-        # Page Preview
-        # --------------------------------------------------
+            page = pdf[
+                page_number
+            ]
 
-        st.subheader("🖼 PDF Page Preview")
-
-        for page_number in range(pdf.page_count):
-
-            page = pdf[page_number]
-
-            pix = page.get_pixmap(
-                matrix=fitz.Matrix(2, 2)
-            )
-
-            img = Image.frombytes(
-                "RGB",
-                [pix.width, pix.height],
-                pix.samples
+            image = pdf_page_to_image(
+                page
             )
 
             with st.expander(
@@ -249,32 +229,124 @@ if uploaded_file:
             ):
 
                 st.image(
-                    img,
+                    image,
+                    caption="Original Layout",
                     use_container_width=True
                 )
 
-                st.info(
-                    "This image will be used in future steps for rack detection and AR coordinate generation."
+                detect_button = st.button(
+                    f"Detect Racks Page {page_number + 1}"
                 )
 
-        # --------------------------------------------------
-        # Future Processing Placeholder
-        # --------------------------------------------------
+                if detect_button:
+
+                    processed_image, racks = (
+                        detect_racks(image)
+                    )
+
+                    st.subheader(
+                        "Detected Rack Layout"
+                    )
+
+                    st.image(
+                        processed_image,
+                        use_container_width=True
+                    )
+
+                    if len(racks):
+
+                        rack_df = pd.DataFrame(
+                            racks
+                        )
+
+                        all_racks.extend(
+                            racks
+                        )
+
+                        st.success(
+                            f"{len(racks)} racks detected"
+                        )
+
+                        st.dataframe(
+                            rack_df,
+                            use_container_width=True
+                        )
+
+                        # -------------------------
+                        # Layout Visualization
+                        # -------------------------
+
+                        st.subheader(
+                            "Layout Map"
+                        )
+
+                        fig = px.scatter(
+                            rack_df,
+                            x="x",
+                            y="y",
+                            text="rack_code",
+                            size="area",
+                            title="Detected Rack Coordinates"
+                        )
+
+                        fig.update_traces(
+                            textposition="top center"
+                        )
+
+                        fig.update_yaxes(
+                            autorange="reversed"
+                        )
+
+                        st.plotly_chart(
+                            fig,
+                            use_container_width=True
+                        )
+
+                        # -------------------------
+                        # Export CSV
+                        # -------------------------
+
+                        csv = (
+                            rack_df
+                            .to_csv(
+                                index=False
+                            )
+                            .encode("utf-8")
+                        )
+
+                        st.download_button(
+                            label="⬇ Download Rack Coordinates",
+                            data=csv,
+                            file_name="detected_racks.csv",
+                            mime="text/csv"
+                        )
+
+                    else:
+
+                        st.warning(
+                            "No racks detected."
+                        )
+
+        # -----------------------------------------
+        # FUTURE ROADMAP
+        # -----------------------------------------
 
         st.divider()
 
-        st.subheader("🚀 Next Step")
+        st.subheader(
+            "🚀 Next Phase"
+        )
 
-        st.success(
+        st.info(
             """
-            PDF successfully processed.
+            Next implementation steps:
 
-            Next phase:
-            - Detect racks using OpenCV
-            - Extract rack coordinates
-            - Generate navigation graph
-            - Store coordinates in PostgreSQL
-            - Create AR anchor points
+            1. Save racks into PostgreSQL
+            2. Create aisles automatically
+            3. Build navigation graph
+            4. Generate shortest paths
+            5. Create AR anchor locations
+            6. Build FastAPI validation services
             """
         )
 
