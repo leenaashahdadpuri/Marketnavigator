@@ -43,6 +43,30 @@ except Exception as ex:
 
     st.stop()
 
+ # ----------------------------------------
+    # CONNECTION TEST
+    # ----------------------------------------
+
+    with engine.connect() as conn:
+
+        result = conn.execute(
+            text("SELECT NOW()")
+        )
+
+        db_time = result.scalar()
+
+    st.success(
+        f"✅ PostgreSQL Connected\n\nDatabase Time: {db_time}"
+    )
+
+except Exception as ex:
+
+    st.error(
+        f"❌ Database Connection Failed:\n\n{str(ex)}"
+    )
+
+    st.stop()
+
 # =====================================================
 # HELPER FUNCTIONS
 # =====================================================
