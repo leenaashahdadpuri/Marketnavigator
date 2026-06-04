@@ -6,11 +6,11 @@ import pandas as pd
 import plotly.express as px
 
 from PIL import Image
-from io import BytesIO
+from sqlalchemy import create_engine, text
 
-# ---------------------------------------------------
+# =====================================================
 # PAGE CONFIG
-# ---------------------------------------------------
+# =====================================================
 
 st.set_page_config(
     page_title="Store Layout Generator",
@@ -19,27 +19,74 @@ st.set_page_config(
 
 st.title("🏬 Store Layout Generator")
 
-st.markdown("""
-Upload a store layout PDF.
+# =====================================================
+# DATABASE CONNECTION
+# =====================================================
 
-Current Features:
-- PDF Upload
-- PDF Preview
-- Metadata Extraction
-- Rack Detection
-- Coordinate Generation
-- Layout Visualization
+try:
 
-Future Features:
-- PostgreSQL Storage
-- Navigation Graph Generation
-- Route Optimization
-- AR Anchor Generation
-""")
+    DB_URL = (
+        f"postgresql://"
+        f"{st.secrets['DB_USER']}:"
+        f"{st.secrets['DB_PASSWORD']}@"
+        f"{st.secrets['DB_HOST']}:"
+        f"{st.secrets['DB_PORT']}/"
+        f"{st.secrets['DB_NAME']}"
+    )
 
-# ---------------------------------------------------
+    engine = create_engine(DB_URL)
+
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+    st.success("✅ PostgreSQL Connected")
+
+except Exception as ex:
+
+    st.error(
+        f"Database Connection Failed: {str(ex)}"
+    )
+
+    st.stop()
+
+# =====================================================
 # HELPER FUNCTIONS
-# ---------------------------------------------------
+# =====================================================
+
+def create_tables():
+
+    with engine.begin() as conn:
+
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS stores
+        (
+            id BIGSERIAL PRIMARY KEY,
+            store_name VARCHAR(200)
+        )
+        """))
+
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS racks
+        (
+            id BIGSERIAL PRIMARY KEY,
+
+            store_id BIGINT,
+
+            rack_code VARCHAR(100) UNIQUE,
+
+            x_coordinate INTEGER,
+            y_coordinate INTEGER,
+
+            width INTEGER,
+            height INTEGER,
+
+            area INTEGER,
+
+            created_at TIMESTAMP
+            DEFAULT CURRENT_TIMESTAMP
+        )
+        """))
+
 
 def pdf_page_to_image(page):
 
@@ -47,13 +94,13 @@ def pdf_page_to_image(page):
         matrix=fitz.Matrix(2, 2)
     )
 
-    image = Image.frombytes(
+    img = Image.frombytes(
         "RGB",
         [pix.width, pix.height],
         pix.samples
     )
 
-    return image
+    return img
 
 
 def detect_racks(pil_image):
@@ -67,17 +114,23 @@ def detect_racks(pil_image):
         cv2.COLOR_RGB2GRAY
     )
 
-    blur = cv2.GaussianBlur(
-        gray,
-        (5, 5),
-        0
-    )
-
     _, thresh = cv2.threshold(
-        blur,
+        gray,
         180,
         255,
         cv2.THRESH_BINARY_INV
+    )
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (5, 5)
+    )
+
+    thresh = cv2.morphologyEx(
+        thresh,
+        cv2.MORPH_CLOSE,
+        kernel,
+        iterations=2
     )
 
     contours, _ = cv2.findContours(
@@ -90,7 +143,31 @@ def detect_racks(pil_image):
 
     rack_number = 1
 
+    img_height, img_width = image.shape[:2]
+
+    min_area = (
+        img_height * img_width
+    ) * 0.001
+
+    max_area = (
+        img_height * img_width
+    ) * 0.20
+
     for contour in contours:
+
+        perimeter = cv2.arcLength(
+            contour,
+            True
+        )
+
+        approx = cv2.approxPolyDP(
+            contour,
+            0.02 * perimeter,
+            True
+        )
+
+        if len(approx) != 4:
+            continue
 
         x, y, w, h = cv2.boundingRect(
             contour
@@ -98,37 +175,37 @@ def detect_racks(pil_image):
 
         area = w * h
 
-        # Ignore tiny objects
-        if area < 3000:
+        if area < min_area:
+            continue
+
+        if area > max_area:
             continue
 
         aspect_ratio = w / h
 
-        # Filter obvious noise
-        if w < 30 or h < 30:
+        if aspect_ratio > 5:
             continue
 
-        rack_code = f"RACK-{rack_number:03}"
+        if aspect_ratio < 0.2:
+            continue
 
-        racks.append(
-            {
-                "rack_code": rack_code,
-                "x": x,
-                "y": y,
-                "width": w,
-                "height": h,
-                "area": area,
-                "aspect_ratio": round(
-                    aspect_ratio,
-                    2
-                )
-            }
+        rack_code = (
+            f"RACK-{rack_number:03}"
         )
+
+        racks.append({
+            "rack_code": rack_code,
+            "x": int(x),
+            "y": int(y),
+            "width": int(w),
+            "height": int(h),
+            "area": int(area)
+        })
 
         cv2.rectangle(
             original,
             (x, y),
-            (x + w, y + h),
+            (x+w, y+h),
             (0, 255, 0),
             3
         )
@@ -136,9 +213,9 @@ def detect_racks(pil_image):
         cv2.putText(
             original,
             rack_code,
-            (x, y - 10),
+            (x, y-10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            0.6,
             (255, 0, 0),
             2
         )
@@ -148,210 +225,227 @@ def detect_racks(pil_image):
     return original, racks
 
 
-# ---------------------------------------------------
+def save_racks_to_db(rack_df):
+
+    with engine.begin() as conn:
+
+        for _, row in rack_df.iterrows():
+
+            conn.execute(
+                text("""
+                INSERT INTO racks
+                (
+                    rack_code,
+                    x_coordinate,
+                    y_coordinate,
+                    width,
+                    height,
+                    area
+                )
+                VALUES
+                (
+                    :rack_code,
+                    :x,
+                    :y,
+                    :width,
+                    :height,
+                    :area
+                )
+
+                ON CONFLICT (rack_code)
+
+                DO UPDATE SET
+
+                x_coordinate =
+                EXCLUDED.x_coordinate,
+
+                y_coordinate =
+                EXCLUDED.y_coordinate,
+
+                width =
+                EXCLUDED.width,
+
+                height =
+                EXCLUDED.height,
+
+                area =
+                EXCLUDED.area
+                """),
+                row.to_dict()
+            )
+
+# =====================================================
+# INIT TABLES
+# =====================================================
+
+create_tables()
+
+# =====================================================
 # PDF UPLOAD
-# ---------------------------------------------------
+# =====================================================
 
 uploaded_file = st.file_uploader(
     "Upload Store Layout PDF",
     type=["pdf"]
 )
 
-# ---------------------------------------------------
-# PROCESS PDF
-# ---------------------------------------------------
-
 if uploaded_file:
 
-    try:
+    pdf_bytes = uploaded_file.read()
 
-        pdf_bytes = uploaded_file.read()
+    pdf = fitz.open(
+        stream=pdf_bytes,
+        filetype="pdf"
+    )
 
-        pdf = fitz.open(
-            stream=pdf_bytes,
-            filetype="pdf"
-        )
+    st.subheader("PDF Information")
 
-        st.success(
-            "PDF uploaded successfully"
-        )
+    col1, col2 = st.columns(2)
 
-        # -----------------------------------------
-        # PDF INFO
-        # -----------------------------------------
-
-        st.subheader("📄 PDF Information")
-
-        metadata = pdf.metadata
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric(
-                "Pages",
-                pdf.page_count
-            )
-
-        with col2:
-            st.metric(
-                "Title",
-                metadata.get("title") or "N/A"
-            )
-
-        with col3:
-            st.metric(
-                "Author",
-                metadata.get("author") or "N/A"
-            )
-
-        # -----------------------------------------
-        # PAGE PROCESSING
-        # -----------------------------------------
-
-        st.subheader("🖼 Layout Pages")
-
-        all_racks = []
-
-        for page_number in range(
+    with col1:
+        st.metric(
+            "Pages",
             pdf.page_count
+        )
+
+    with col2:
+        st.metric(
+            "Title",
+            pdf.metadata.get("title")
+            or "N/A"
+        )
+
+    # ==============================================
+    # PAGE LOOP
+    # ==============================================
+
+    for page_number in range(
+        pdf.page_count
+    ):
+
+        page = pdf[
+            page_number
+        ]
+
+        image = pdf_page_to_image(
+            page
+        )
+
+        st.subheader(
+            f"Page {page_number + 1}"
+        )
+
+        st.image(
+            image,
+            use_container_width=True
+        )
+
+        if st.button(
+            f"Detect Racks Page {page_number+1}"
         ):
 
-            page = pdf[
-                page_number
-            ]
-
-            image = pdf_page_to_image(
-                page
+            processed_image, racks = (
+                detect_racks(image)
             )
 
-            with st.expander(
-                f"Page {page_number + 1}"
-            ):
+            st.image(
+                processed_image,
+                caption="Detected Racks",
+                use_container_width=True
+            )
 
-                st.image(
-                    image,
-                    caption="Original Layout",
+            if racks:
+
+                rack_df = pd.DataFrame(
+                    racks
+                )
+
+                st.success(
+                    f"{len(racks)} racks detected"
+                )
+
+                st.dataframe(
+                    rack_df,
                     use_container_width=True
                 )
 
-                detect_button = st.button(
-                    f"Detect Racks Page {page_number + 1}"
+                # ==================================
+                # SAVE TO DB
+                # ==================================
+
+                if st.button(
+                    "💾 Save Racks To PostgreSQL"
+                ):
+
+                    save_racks_to_db(
+                        rack_df
+                    )
+
+                    st.success(
+                        f"{len(rack_df)} racks saved"
+                    )
+
+                # ==================================
+                # VISUALIZATION
+                # ==================================
+
+                fig = px.scatter(
+                    rack_df,
+                    x="x",
+                    y="y",
+                    text="rack_code",
+                    size="area",
+                    title="Detected Rack Layout"
                 )
 
-                if detect_button:
+                fig.update_yaxes(
+                    autorange="reversed"
+                )
 
-                    processed_image, racks = (
-                        detect_racks(image)
-                    )
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
 
-                    st.subheader(
-                        "Detected Rack Layout"
-                    )
+                # ==================================
+                # CSV EXPORT
+                # ==================================
 
-                    st.image(
-                        processed_image,
-                        use_container_width=True
-                    )
+                csv = (
+                    rack_df
+                    .to_csv(index=False)
+                    .encode("utf-8")
+                )
 
-                    if len(racks):
+                st.download_button(
+                    "⬇ Download Rack CSV",
+                    csv,
+                    "racks.csv",
+                    "text/csv"
+                )
 
-                        rack_df = pd.DataFrame(
-                            racks
-                        )
+# =====================================================
+# VIEW SAVED RACKS
+# =====================================================
 
-                        all_racks.extend(
-                            racks
-                        )
+st.divider()
 
-                        st.success(
-                            f"{len(racks)} racks detected"
-                        )
+st.subheader("📦 Saved Racks")
 
-                        st.dataframe(
-                            rack_df,
-                            use_container_width=True
-                        )
+if st.button("Load Saved Racks"):
 
-                        # -------------------------
-                        # Layout Visualization
-                        # -------------------------
+    query = """
+    SELECT *
+    FROM racks
+    ORDER BY rack_code
+    """
 
-                        st.subheader(
-                            "Layout Map"
-                        )
+    saved_df = pd.read_sql(
+        query,
+        engine
+    )
 
-                        fig = px.scatter(
-                            rack_df,
-                            x="x",
-                            y="y",
-                            text="rack_code",
-                            size="area",
-                            title="Detected Rack Coordinates"
-                        )
-
-                        fig.update_traces(
-                            textposition="top center"
-                        )
-
-                        fig.update_yaxes(
-                            autorange="reversed"
-                        )
-
-                        st.plotly_chart(
-                            fig,
-                            use_container_width=True
-                        )
-
-                        # -------------------------
-                        # Export CSV
-                        # -------------------------
-
-                        csv = (
-                            rack_df
-                            .to_csv(
-                                index=False
-                            )
-                            .encode("utf-8")
-                        )
-
-                        st.download_button(
-                            label="⬇ Download Rack Coordinates",
-                            data=csv,
-                            file_name="detected_racks.csv",
-                            mime="text/csv"
-                        )
-
-                    else:
-
-                        st.warning(
-                            "No racks detected."
-                        )
-
-        # -----------------------------------------
-        # FUTURE ROADMAP
-        # -----------------------------------------
-
-        st.divider()
-
-        st.subheader(
-            "🚀 Next Phase"
-        )
-
-        st.info(
-            """
-            Next implementation steps:
-
-            1. Save racks into PostgreSQL
-            2. Create aisles automatically
-            3. Build navigation graph
-            4. Generate shortest paths
-            5. Create AR anchor locations
-            6. Build FastAPI validation services
-            """
-        )
-
-    except Exception as ex:
-
-        st.error(
-            f"Error processing PDF: {str(ex)}"
-        )
+    st.dataframe(
+        saved_df,
+        use_container_width=True
+    )
