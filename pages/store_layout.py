@@ -25,16 +25,10 @@ st.title("🏬 Store Layout Generator")
 
 try:
 
-    DB_URL = (
-        f"postgresql://"
-        f"{st.secrets['DB_USER']}:"
-        f"{st.secrets['DB_PASSWORD']}@"
-        f"{st.secrets['DB_HOST']}:"
-        f"{st.secrets['DB_PORT']}/"
-        f"{st.secrets['DB_NAME']}"
-    )
-
-    engine = create_engine(DB_URL)
+ engine = create_engine(
+    st.secrets["DATABASE_URL"],
+    pool_pre_ping=True
+)
 
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
